@@ -45,12 +45,13 @@ module riscv_aligner
   output logic [31:0]    pc_next_o
 );
 
-  enum logic [2:0]  {ALIGNED32, ALIGNED16, MISALIGNED32, MISALIGNED16, BRANCH_MISALIGNED, WAIT_VALID_MISALIGEND16} CS, NS;
+  enum logic [2:0]  {ALIGNED32, ALIGNED16, MISALIGNED32, MISALIGNED16, BRANCH_MISALIGNED, WAIT_VALID_MISALIGEND16, WAIT_ID_VALID} CS, NS;
 
   logic [15:0]       r_instr;
   logic [31:0]       pc_q, pc_n;
   logic              update_state;
   logic [31:0] pc_plus4, pc_plus2;
+  logic [31:0] r_hwloop_addr;
 
 
   assign pc_o      = pc_q;
@@ -63,14 +64,19 @@ module riscv_aligner
   always_ff @(posedge clk or negedge rst_n)
   begin : proc_SEQ_FSM
     if(~rst_n) begin
-       CS        <= ALIGNED32;
-       r_instr   <= '0;
-       pc_q      <= '0;
+       CS            <= ALIGNED32;
+       r_instr       <= '0;
+       pc_q          <= '0;
+       r_hwloop_addr <= '0;
     end else begin
+        if (hwloop_branch_i)  
+          r_hwloop_addr <= hwloop_addr_i;
+
         if(update_state) begin
           pc_q      <= pc_n;
           CS        <= NS;
           r_instr <= mem_content_i[31:16];
+
         end
     end
   end
@@ -96,13 +102,20 @@ module riscv_aligner
                   Before we fetched a 32bit aligned instruction
                   Therefore, now the address is aligned too and it is 32bits
                 */
-                NS               = ALIGNED32;
-                pc_n             = pc_plus4;
+                
+                
                 instr_o          = mem_content_i;
                 instr_compress_o = 1'b0;
-                update_state     = fetch_valid_i && id_valid_i;
-                if(hwloop_branch_i)
+                update_state     = fetch_valid_i && id_valid_i | hwloop_branch_i;
+
+                if(hwloop_branch_i) begin
                   pc_n = hwloop_addr_i;
+                  NS               = ( id_valid_i) ?  ALIGNED32 : WAIT_ID_VALID;
+                end else begin 
+                  pc_n = pc_plus4;
+                  NS               = ALIGNED32;
+                end
+
             end else begin
                 /*
                   Before we fetched a 32bit aligned instruction
@@ -115,6 +128,16 @@ module riscv_aligner
                 update_state     = fetch_valid_i && id_valid_i;
             end
       end
+
+      WAIT_ID_VALID:
+      begin
+          pc_n = r_hwloop_addr;
+          NS  = ( id_valid_i) ?  ALIGNED32 : WAIT_ID_VALID;
+          instr_o          = mem_content_i;
+          instr_compress_o = 1'b0;
+          update_state     = fetch_valid_i && id_valid_i;          
+      end
+
 
       ALIGNED16:
       begin
